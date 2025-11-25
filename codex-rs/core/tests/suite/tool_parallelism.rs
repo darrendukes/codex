@@ -257,25 +257,34 @@ async fn tool_results_grouped() -> anyhow::Result<()> {
     assert_eq!(function_calls.len(), 3);
     assert_eq!(function_call_outputs.len(), 3);
 
-    for (index, _) in &function_calls {
-        for (output_index, _) in &function_call_outputs {
-            assert!(
-                *index < *output_index,
-                "all function calls must come before outputs"
-            );
-        }
-    }
-
-    // output should come in the order of the function calls
-    let zipped = function_calls
-        .iter()
-        .zip(function_call_outputs.iter())
-        .collect::<Vec<_>>();
-    for (call, output) in zipped {
-        assert_eq!(
-            call.1.get("call_id").and_then(Value::as_str),
-            output.1.get("call_id").and_then(Value::as_str)
+    // Each function call should be immediately followed by its corresponding output.
+    // This is required by Claude Sonnet which expects tool_use blocks to be
+    // immediately followed by their tool_result blocks.
+    for (i, (call_index, call)) in function_calls.iter().enumerate() {
+        let call_id = call.get("call_id").and_then(Value::as_str).unwrap();
+        
+        // The output should be the next item after the call
+        let expected_output_index = call_index + 1;
+        assert!(
+            expected_output_index < input.len(),
+            "function call at index {call_index} should be followed by output"
         );
+        
+        let output_item = &input[expected_output_index];
+        assert_eq!(
+            output_item.get("type").and_then(Value::as_str),
+            Some("function_call_output"),
+            "function call at index {call_index} should be immediately followed by output"
+        );
+        
+        let output_call_id = output_item.get("call_id").and_then(Value::as_str).unwrap();
+        assert_eq!(
+            call_id, output_call_id,
+            "function call and output call_ids should match"
+        );
+        
+        // Verify this is the correct output in the outputs list
+        assert_eq!(function_call_outputs[i].0, expected_output_index);
     }
 
     Ok(())

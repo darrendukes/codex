@@ -13,8 +13,7 @@ pub(crate) async fn process_items(
     sess: &Session,
     turn_context: &TurnContext,
 ) -> (Vec<ResponseInputItem>, Vec<ResponseItem>) {
-    let mut outputs_to_record = Vec::<ResponseItem>::new();
-    let mut new_inputs_to_record = Vec::<ResponseItem>::new();
+    let mut all_items_to_record = Vec::<ResponseItem>::new();
     let mut responses = Vec::<ResponseInputItem>::new();
     for processed_response_item in processed_items {
         let crate::codex::ProcessedResponseItem { item, response } = processed_response_item;
@@ -23,44 +22,58 @@ pub(crate) async fn process_items(
             responses.push(response.clone());
         }
 
-        match response {
+        // Immediately after recording the tool call, record its output if present.
+        // This ensures tool_use and tool_result blocks are adjacent in the conversation
+        // history, which is required by Claude Sonnet.
+        match &response {
             Some(ResponseInputItem::FunctionCallOutput { call_id, output }) => {
-                new_inputs_to_record.push(ResponseItem::FunctionCallOutput {
+                // Record the original item first
+                all_items_to_record.push(item);
+                // Then immediately record the output
+                all_items_to_record.push(ResponseItem::FunctionCallOutput {
                     call_id: call_id.clone(),
                     output: output.clone(),
                 });
             }
 
             Some(ResponseInputItem::CustomToolCallOutput { call_id, output }) => {
-                new_inputs_to_record.push(ResponseItem::CustomToolCallOutput {
+                // Record the original item first
+                all_items_to_record.push(item);
+                // Then immediately record the output
+                all_items_to_record.push(ResponseItem::CustomToolCallOutput {
                     call_id: call_id.clone(),
                     output: output.clone(),
                 });
             }
             Some(ResponseInputItem::McpToolCallOutput { call_id, result }) => {
                 let output = match result {
-                    Ok(call_tool_result) => FunctionCallOutputPayload::from(&call_tool_result),
+                    Ok(call_tool_result) => FunctionCallOutputPayload::from(call_tool_result),
                     Err(err) => FunctionCallOutputPayload {
                         content: err.clone(),
                         success: Some(false),
                         ..Default::default()
                     },
                 };
-                new_inputs_to_record.push(ResponseItem::FunctionCallOutput {
+                // Record the original item first
+                all_items_to_record.push(item);
+                // Then immediately record the output
+                all_items_to_record.push(ResponseItem::FunctionCallOutput {
                     call_id: call_id.clone(),
                     output,
                 });
             }
-            None => {}
+            None => {
+                // Record the item without any output
+                all_items_to_record.push(item);
+            }
             _ => {
                 warn!("Unexpected response item: {item:?} with response: {response:?}");
+                // Still record the item even if unexpected
+                all_items_to_record.push(item);
             }
         };
-
-        outputs_to_record.push(item);
     }
 
-    let all_items_to_record = [outputs_to_record, new_inputs_to_record].concat();
     // Only attempt to take the lock if there is something to record.
     if !all_items_to_record.is_empty() {
         sess.record_conversation_items(turn_context, &all_items_to_record)

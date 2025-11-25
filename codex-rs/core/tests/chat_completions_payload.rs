@@ -344,15 +344,21 @@ async fn consolidates_consecutive_function_calls() {
         .collect();
 
     // Should only have ONE assistant message with multiple tool_calls
-    assert_eq!(assistant_messages.len(), 1, "Should consolidate into single assistant message");
-    
-    let tool_calls = assistant_messages[0]["tool_calls"].as_array().expect("tool_calls should be array");
+    assert_eq!(
+        assistant_messages.len(),
+        1,
+        "Should consolidate into single assistant message"
+    );
+
+    let tool_calls = assistant_messages[0]["tool_calls"]
+        .as_array()
+        .expect("tool_calls should be array");
     assert_eq!(tool_calls.len(), 2, "Should have both tool calls in array");
-    
+
     assert_eq!(tool_calls[0]["id"], "call-1");
     assert_eq!(tool_calls[0]["type"], "function");
     assert_eq!(tool_calls[0]["function"]["name"], "tool1");
-    
+
     assert_eq!(tool_calls[1]["id"], "call-2");
     assert_eq!(tool_calls[1]["type"], "function");
     assert_eq!(tool_calls[1]["function"]["name"], "tool2");

@@ -242,10 +242,7 @@ pub(crate) async fn stream_chat_completions(
                             idx += 1;
                         }
                         ResponseItem::LocalShellCall {
-                            id,
-                            status,
-                            action,
-                            ..
+                            id, status, action, ..
                         } => {
                             tool_calls.push(json!({
                                 "id": id.clone().unwrap_or_else(|| "".to_string()),
