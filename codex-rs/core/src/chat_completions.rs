@@ -161,8 +161,9 @@ pub(crate) async fn stream_chat_completions(
     // aggregated assistant message was recorded alongside an earlier partial).
     let mut last_assistant_text: Option<String> = None;
 
-    for (idx, item) in input.iter().enumerate() {
-        match item {
+    let mut idx = 0;
+    while idx < input.len() {
+        match &input[idx] {
             ResponseItem::Message { role, content, .. } => {
                 // Build content either as a plain string (typical for assistant text)
                 // or as an array of content items when images are present (user/tool multimodal).
@@ -189,6 +190,7 @@ pub(crate) async fn stream_chat_completions(
                     if let Some(prev) = &last_assistant_text
                         && prev == &text
                     {
+                        idx += 1;
                         continue;
                     }
                     last_assistant_text = Some(text.clone());
@@ -212,50 +214,59 @@ pub(crate) async fn stream_chat_completions(
                     obj.insert("reasoning".to_string(), json!(reasoning));
                 }
                 messages.push(msg);
+                idx += 1;
             }
-            ResponseItem::FunctionCall {
-                name,
-                arguments,
-                call_id,
-                ..
-            } => {
-                let mut msg = json!({
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": call_id,
-                        "type": "function",
-                        "function": {
-                            "name": name,
-                            "arguments": arguments,
+            ResponseItem::FunctionCall { .. } | ResponseItem::LocalShellCall { .. } => {
+                // Consolidate consecutive function/shell calls into a single assistant message.
+                // This is required for Claude/Anthropic models which enforce strict alternation
+                // between assistant messages with tool_calls and tool/user messages with results.
+                let mut tool_calls = Vec::new();
+                let first_idx = idx;
+
+                while idx < input.len() {
+                    match &input[idx] {
+                        ResponseItem::FunctionCall {
+                            name,
+                            arguments,
+                            call_id,
+                            ..
+                        } => {
+                            tool_calls.push(json!({
+                                "id": call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": name,
+                                    "arguments": arguments,
+                                }
+                            }));
+                            idx += 1;
                         }
-                    }]
-                });
-                if let Some(reasoning) = reasoning_by_anchor_index.get(&idx)
-                    && let Some(obj) = msg.as_object_mut()
-                {
-                    obj.insert("reasoning".to_string(), json!(reasoning));
+                        ResponseItem::LocalShellCall {
+                            id,
+                            status,
+                            action,
+                            ..
+                        } => {
+                            tool_calls.push(json!({
+                                "id": id.clone().unwrap_or_else(|| "".to_string()),
+                                "type": "local_shell_call",
+                                "status": status,
+                                "action": action,
+                            }));
+                            idx += 1;
+                        }
+                        _ => break,
+                    }
                 }
-                messages.push(msg);
-            }
-            ResponseItem::LocalShellCall {
-                id,
-                call_id: _,
-                status,
-                action,
-            } => {
-                // Confirm with API team.
+
                 let mut msg = json!({
                     "role": "assistant",
                     "content": null,
-                    "tool_calls": [{
-                        "id": id.clone().unwrap_or_else(|| "".to_string()),
-                        "type": "local_shell_call",
-                        "status": status,
-                        "action": action,
-                    }]
+                    "tool_calls": tool_calls,
                 });
-                if let Some(reasoning) = reasoning_by_anchor_index.get(&idx)
+
+                // Attach reasoning from the first tool call if present.
+                if let Some(reasoning) = reasoning_by_anchor_index.get(&first_idx)
                     && let Some(obj) = msg.as_object_mut()
                 {
                     obj.insert("reasoning".to_string(), json!(reasoning));
@@ -263,6 +274,7 @@ pub(crate) async fn stream_chat_completions(
                 messages.push(msg);
             }
             ResponseItem::FunctionCallOutput { call_id, output } => {
+                idx += 1;
                 // Prefer structured content items when available (e.g., images)
                 // otherwise fall back to the legacy plain-string content.
                 let content_value = if let Some(items) = &output.content_items {
@@ -295,6 +307,7 @@ pub(crate) async fn stream_chat_completions(
                 input,
                 status: _,
             } => {
+                idx += 1;
                 messages.push(json!({
                     "role": "assistant",
                     "content": null,
@@ -309,6 +322,7 @@ pub(crate) async fn stream_chat_completions(
                 }));
             }
             ResponseItem::CustomToolCallOutput { call_id, output } => {
+                idx += 1;
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": call_id,
@@ -316,6 +330,7 @@ pub(crate) async fn stream_chat_completions(
                 }));
             }
             ResponseItem::GhostSnapshot { .. } => {
+                idx += 1;
                 // Ghost snapshots annotate history but are not sent to the model.
                 continue;
             }
@@ -323,6 +338,7 @@ pub(crate) async fn stream_chat_completions(
             | ResponseItem::WebSearchCall { .. }
             | ResponseItem::Other
             | ResponseItem::CompactionSummary { .. } => {
+                idx += 1;
                 // Omit these items from the conversation history.
                 continue;
             }

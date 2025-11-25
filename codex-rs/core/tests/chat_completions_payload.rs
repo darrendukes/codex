@@ -317,3 +317,43 @@ async fn suppresses_duplicate_assistant_messages() {
         Value::String("dup".into())
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn consolidates_consecutive_function_calls() {
+    skip_if_no_network!();
+
+    let call1 = ResponseItem::FunctionCall {
+        id: None,
+        name: "tool1".to_string(),
+        arguments: "{\"arg\":\"val1\"}".to_string(),
+        call_id: "call-1".to_string(),
+    };
+    let call2 = ResponseItem::FunctionCall {
+        id: None,
+        name: "tool2".to_string(),
+        arguments: "{\"arg\":\"val2\"}".to_string(),
+        call_id: "call-2".to_string(),
+    };
+
+    let body = run_request(vec![user_message("u1"), call1, call2]).await;
+    let messages = messages_from(&body);
+
+    let assistant_messages: Vec<_> = messages
+        .iter()
+        .filter(|msg| msg["role"] == "assistant")
+        .collect();
+
+    // Should only have ONE assistant message with multiple tool_calls
+    assert_eq!(assistant_messages.len(), 1, "Should consolidate into single assistant message");
+    
+    let tool_calls = assistant_messages[0]["tool_calls"].as_array().expect("tool_calls should be array");
+    assert_eq!(tool_calls.len(), 2, "Should have both tool calls in array");
+    
+    assert_eq!(tool_calls[0]["id"], "call-1");
+    assert_eq!(tool_calls[0]["type"], "function");
+    assert_eq!(tool_calls[0]["function"]["name"], "tool1");
+    
+    assert_eq!(tool_calls[1]["id"], "call-2");
+    assert_eq!(tool_calls[1]["type"], "function");
+    assert_eq!(tool_calls[1]["function"]["name"], "tool2");
+}
